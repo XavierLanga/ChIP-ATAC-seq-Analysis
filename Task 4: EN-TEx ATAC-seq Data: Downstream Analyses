@@ -1,0 +1,159 @@
+# Task 4: EN-TEx ATAC-seq Data: Downstream Analyses
+
+***
+
+## Description:
+
+This document provides the command-line steps used to:
+
+1. Set up the environment and directories.
+2. Retrieve and verify metadata for ATAC-seq peaks.
+3. Download and process bigBed files.
+4. Verify MD5 sums.
+5. Generate annotation files (promoter regions and gene body coordinates).
+6. Perform intersection analysis using BEDTools.
+7. Interpret the results of the intersection analysis.
+
+## Move to Folder ATAC-seq and Organize Files
+
+* Move to the ATAC-seq directory and create folders to store bigBed data files and peak analyses. Ensure that files are structured consistently with the ChIP-seq workflow.
+
+`cd ~
+mkdir -p ATAC-seq/{bigBed_files,peaks_analysis,bed_files,annotations,analyses/peaks.analysis}
+cd ATAC-seq`
+
+## Retrieve ATAC-seq Peaks Metadata for Stomach and Sigmoid Colon
+
+### Download and Filter the Metadata File
+
+* Download and filter the metadata file to extract ATAC-seq peaks (bigBed narrow, pseudoreplicated peaks, GRCh38) for stomach and sigmoid colon for the same donor.
+
+`wget -O metadata.tsv "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&assay_title=ATAC-seq&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&assay_slims=DNA+accessibility&type=Experiment&files.file_type=bigBed+narrowPeak"`
+
+`head -n 5 metadata.tsv`
+
+### Extract Relevant Data
+
+`grep -F "bigBed narrowPeak" metadata.tsv | \
+grep -F "pseudoreplicated peaks" | \
+grep -F "GRCh38" | \
+awk 'BEGIN {FS="\t"; OFS="\t"} {print $1, $11}' | sort -k2,2 -u > peaks_analysis/bigBed.peaks.ids.txt`
+
+### Verify Extracted Information
+
+`head -n 5 peaks_analysis/bigBed.peaks.ids.txt`
+
+Expected Output:
+ENCFF287UHP     sigmoid colon
+ENCFF762IFP     stomach
+
+### Download bigBed Files
+
+`cut -f1 peaks_analysis/bigBed.peaks.ids.txt | while read file; do
+    wget -P bigBed_files "https://www.encodeproject.org/files/$file/@@download/$file.bigBed"
+done`
+
+### Verify Downloaded Files
+
+`ls -lh bigBed_files`
+
+### Convert bigBed to BED Format
+
+`cut -f1 peaks_analysis/bigBed.peaks.ids.txt | while read filename; do
+    bigBedToBed bigBed_files/"$filename".bigBed bed_files/"$filename".bed
+done`
+
+### Verify Conversion
+
+`ls -lh bed_files
+head -n 5 bed_files/ENCFF287UHP.bed
+head -n 5 bed_files/ENCFF762IFP.bed`
+
+### Verify MD5 Sums
+
+`awk 'BEGIN {FS="\t"; OFS="\t"} ($1!="File accession") {print $1, $46}' metadata.tsv > peaks_analysis/md5sum_reference.txt
+head -n 5 peaks_analysis/md5sum_reference.txt
+
+md5sum bigBed_files/*.bigBed > peaks_analysis/md5sum_downloaded.txt
+awk '{print $2, $1}' peaks_analysis/md5sum_downloaded.txt > peaks_analysis/md5sum_downloaded_fixed.txt
+sed 's|bigBed_files/||; s|\.bigBed||' peaks_analysis/md5sum_downloaded_fixed.txt > peaks_analysis/md5sum_downloaded_keys.txt
+join <(sort peaks_analysis/md5sum_reference.txt) <(sort peaks_analysis/md5sum_downloaded_keys.txt) > peaks_analysis/md5sum_comparison_results.txt`
+
+### Check if the MD5 Sums Match
+
+`head -n 5 peaks_analysis/md5sum_comparison_results.txt`
+
+## Intersection Analysis Using BEDTools
+
+### Generate Annotation Files. Download and Process GTF File
+
+`wget -P annotations "https://www.encodeproject.org/files/gencode.v24.primary_assembly.annotation/@@download/gencode.v24.primary_assembly.annotation.gtf.gz"
+gunzip annotations/gencode.v24.primary_assembly.annotation.gtf.gz`
+
+### Create Promoter Regions (±2000 bp around TSS)
+
+`awk '$3=="gene"' annotations/gencode.v24.primary_assembly.annotation.gtf | \
+grep -F "protein_coding" | \
+awk 'BEGIN {FS="\t"; OFS="\t"} {
+    if($7=="+") { start = $4 - 2000; end = $4 + 2000 }
+    else if($7=="-") { start = $5 - 2000; end = $5 + 2000 }
+    else { start = $4 - 2000; end = $4 + 2000 }
+    print $1, (start<0?0:start), end, $10, 0, $7
+}' | sed 's/\"//g' | awk 'BEGIN {FS="\t"; OFS="\t"} $1!="chrM" {print $0}' \
+    > annotations/promoter_regions.bed`
+
+### Create Gene Body Coordinates
+`grep -F "protein_coding" | \
+awk 'BEGIN {FS="\t"; OFS="\t"} { print $1, $4-1, $5, $10, 0, $7 }' | \
+sed 's/\"//g' | awk 'BEGIN {FS="\t"; OFS="\t"} $1!="chrM" {print $0}' \
+    > annotations/gene_body_coordinates.bed`
+
+`ls -lh annotations/promoter_regions.bed
+ls -lh annotations/gene_body_coordinates.bed
+head -n 5 annotations/promoter_regions.bed
+head -n 5 annotations/gene_body_coordinates.bed`
+
+### Intersection Analysis with BEDTools
+
+`mkdir -p analyses/peaks.analysis`
+
+`while read accession tissue; do
+    tissue_file=$(echo "$tissue" | tr ' ' '_')
+    echo "Processing $accession ($tissue)..."
+
+    # Count intersections with promoter regions
+    bedtools intersect -a annotations/promoter_regions.bed \
+                       -b bed_files/"$accession".bed -u | wc -l \
+        > analyses/peaks.analysis/"${tissue_file}"_promoter_intersections.txt
+
+    # Count peaks that do NOT overlap gene body coordinates
+    bedtools intersect -v -a annotations/gene_body_coordinates.bed \
+                       -b bed_files/"$accession".bed | wc -l \
+        > analyses/peaks.analysis/"${tissue_file}"_non_gene.txt
+done < peaks_analysis/bigBed.peaks.ids.txt`
+
+`head -n 5 analyses/peaks.analysis/sigmoid_colon_promoter_intersections.txt`
+Result: 13609 peaks in promoter regions
+
+`head -n 5 analyses/peaks.analysis/sigmoid_colon_non_gene.txt`
+Result: 4297 peaks outside gene bodies
+
+`head -n 5 analyses/peaks.analysis/stomach_promoter_intersections.txt`
+Result: 13779 peaks in promoter regions
+
+`head -n 5 analyses/peaks.analysis/stomach_non_gene.txt`
+Result: 4036 peaks outside gene bodies`
+
+### INTERPRETATION
+
+- The sigmoid colon has 13,609 peaks overlapping promoter regions, meaning a significant number of accessible chromatin sites are near transcription start sites.
+
+- The stomach has slightly more (13,779 peaks) intersecting promoter regions, suggesting a comparable pattern of regulatory elements in these tissues.
+
+- The number of peaks falling outside gene bodies is 4,297 for sigmoid colon and 4,036 for stomach, indicating that a portion of regulatory elements is located in intergenic or intronic regions.
+
+This suggests that while promoter accessibility is similar across tissues, there are some differences in distal regulatory elements or intergenic open chromatin regions. 
+
+
+
+

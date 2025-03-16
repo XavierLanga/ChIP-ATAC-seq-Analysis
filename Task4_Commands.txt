@@ -1,0 +1,109 @@
+# Task 4: Intersection Analysis for ATAC-seq Data
+
+This document reports the command‐line steps used to:
+1. Set up the environment and directories.
+2. Download and parse the metadata file from ENCODE.
+3. Download bigBed files and convert them to BED.
+4. Verify MD5 sums.
+5. Generate annotation files (promoter regions and gene body coordinates).
+6. Run the intersection analysis with BEDTools for each tissue.
+
+---
+
+## 1. Environment Setup
+cd ~
+mkdir -p ATAC-seq/{bigBed_files,peaks_analysis,bed_files,annotations}
+cd ATAC-seq
+
+## 2. Download and Inspect the Metadata File
+wget -O metadata.tsv "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&assay_title=ATAC-seq&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&assay_slims=DNA+accessibility&type=Experiment&files.file_type=bigBed+narrowPeak"
+
+head -n 5 metadata.tsv
+
+## 3. Parse the Metadata to Extract Peak IDs and Tissue Information
+grep -F "bigBed_narrowPeak" metadata.tsv | \
+grep -F "pseudoreplicated peaks" | \
+grep -F "GRCh38" | \
+awk 'BEGIN {FS="\t"; OFS="\t"} {print $1, $11}' | sort -k2,2 -u > peaks_analysis/bigBed.peaks.ids.txt
+
+head -n 5 peaks_analysis/bigBed.peaks.ids.txt
+
+## 4. Download bigBed Files
+cut -f1 peaks_analysis/bigBed.peaks.ids.txt | while read file; do
+    wget -P bigBed_files "https://www.encodeproject.org/files/$file/@@download/$file.bigBed"
+done
+
+### Verify files:
+ls -lh bigBed_files
+
+## 5. Convert bigBed Files to BED Format
+cut -f1 peaks_analysis/bigBed.peaks.ids.txt | while read filename; do
+    bigBedToBed bigBed_files/"$filename".bigBed bed_files/"$filename".bed
+done
+
+### Verify BED files:
+ls -lh bed_files
+head -n 5 bed_files/ENCFF287UHP.bed
+head -n 5 bed_files/ENCFF762IFP.bed
+
+## 6. Verify MD5 Sums
+awk 'BEGIN {FS="\t"; OFS="\t"} ($1!="File accession") {print $1, $46}' metadata.tsv > peaks_analysis/md5sum_reference.txt
+head -n 5 peaks_analysis/md5sum_reference.txt
+
+md5sum bigBed_files/*.bigBed > peaks_analysis/md5sum_downloaded.txt
+awk '{print $2, $1}' peaks_analysis/md5sum_downloaded.txt > peaks_analysis/md5sum_downloaded_fixed.txt
+sed 's|bigBed_files/||; s|\.bigBed||' peaks_analysis/md5sum_downloaded_fixed.txt > peaks_analysis/md5sum_downloaded_keys.txt
+join <(sort peaks_analysis/md5sum_reference.txt) <(sort peaks_analysis/md5sum_downloaded_keys.txt) > peaks_analysis/md5sum_comparison_results.txt
+head -n 5 peaks_analysis/md5sum_comparison_results.txt
+
+## 7. Generate Annotation Files
+### 7.1 Download and Prepare the GTF File
+wget -P annotations "https://www.encodeproject.org/files/gencode.v24.primary_assembly.annotation/@@download/gencode.v24.primary_assembly.annotation.gtf.gz"
+gunzip annotations/gencode.v24.primary_assembly.annotation.gtf.gz
+
+### 7.2 Create Promoter Regions (±2000 bp around TSS)
+awk '$3=="gene"' annotations/gencode.v24.primary_assembly.annotation.gtf | \
+grep -F "protein_coding" | \
+awk 'BEGIN {FS="\t"; OFS="\t"} {
+    if($7=="+") { start = $4 - 2000; end = $4 + 2000 }
+    else if($7=="-") { start = $5 - 2000; end = $5 + 2000 }
+    else { start = $4 - 2000; end = $4 + 2000 }
+    print $1, (start<0?0:start), end, $10, 0, $7
+}' | sed 's/\"//g' | awk 'BEGIN {FS="\t"; OFS="\t"} $1!="chrM" {print $0}' \
+    > annotations/promoter_regions.bed
+
+### 7.3 Create Gene Body Coordinates (0-based)awk '$3=="gene"' annotations/gencode.v24.primary_assembly.annotation.gtf | \
+grep -F "protein_coding" | \
+awk 'BEGIN {FS="\t"; OFS="\t"} { print $1, $4-1, $5, $10, 0, $7 }' | \
+sed 's/\"//g' | awk 'BEGIN {FS="\t"; OFS="\t"} $1!="chrM" {print $0}' \
+    > annotations/gene_body_coordinates.bed
+
+ls -lh annotations/promoter_regions.bed
+ls -lh annotations/gene_body_coordinates.bed
+head -n 5 annotations/promoter_regions.bed
+head -n 5 annotations/gene_body_coordinates.bed
+
+
+## 8. Intersection Analysis with BEDTools
+mkdir -p analyses/peaks.analysis
+
+while read accession tissue; do
+    tissue_file=$(echo "$tissue" | tr ' ' '_')
+    echo "Processing $accession ($tissue)..."
+    
+    # Count intersections with promoter regions
+    bedtools intersect -a annotations/promoter_regions.bed \
+                       -b bed_files/"$accession".bed -u | wc -l \
+        > analyses/peaks.analysis/"${tissue_file}"_promoter_intersections.txt
+
+    # Count peaks that do NOT overlap gene body coordinates
+    bedtools intersect -v -a annotations/gene_body_coordinates.bed \
+                       -b bed_files/"$accession".bed | wc -l \
+        > analyses/peaks.analysis/"${tissue_file}"_non_gene.txt
+done < peaks_analysis/bigBed.peaks.ids.txt
+
+head -n 5 analyses/peaks.analysis/sigmoid_colon_promoter_intersections.txt
+head -n 5 analyses/peaks.analysis/sigmoid_colon_non_gene.txt
+head -n 5 analyses/peaks.analysis/stomach_promoter_intersections.txt
+head -n 5 analyses/peaks.analysis/stomach_non_gene.txt
+

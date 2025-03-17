@@ -1,136 +1,95 @@
 # **Task 5:Distal regulatory activity**
 
+***
+
 ## **Task 1: Create Directory Structure**
-- Created the directory `epigenomics_uvic/regulatory_elements` to store subsequent results.
 
-## **Task 2: Identify Distal Regulatory Regions**
-- Downloaded metadata from ENCODE.
-- Filtered for H3K27ac and H3K4me1 peaks in stomach and sigmoid colon tissues.
-- Retrieved bigBed file IDs:
-  ```
-  ENCFF848EII  sigmoid colon   H3K27ac-human
-  ENCFF612PJZ  stomach         H3K27ac-human
-  ENCFF465AFR  stomach         H3K4me1-human
-  ```
-- Downloaded and converted bigBed files to BED format.
-- Subtracted gene-body coordinates from ATAC-seq peaks.
-- Intersected ATAC-seq peaks with histone mark peaks.
+- Create a folder regulatory_elements inside epigenomics_uvic. This will be the folder where you store all your subsequent results.
 
-### **Results:**
-  ```
-  Stomach distal regulatory elements: 17838
-  Sigmoid colon distal regulatory elements: 17439
-  ```
-
-## **Task 3: Extract Regulatory Elements on Chromosome 1**
-- Extracted peaks on chromosome 1.
-- Generated `regulatory.elements.starts.tsv` containing:
-  ```
-  Peak_148510  817333
-  Peak_29458   817333
-  Peak_67565   817333
-  Peak_163653  826954
-  ```
-
-## **Task 4: Extract Gene Starts on Chromosome 1**
-- Extracted protein-coding genes located on chromosome 1.
-- Generated `gene.starts.tsv`:
-  ```
-  ENSG00000186092.4  69090
-  ENSG00000279928.1  182392
-  ENSG00000279457.3  200322
-  ```
-
-## **Task 5: Python Script for Closest Gene Distance Calculation**
-- Created `get.distance.py` script to find the closest gene and its distance.
-- Tested script:
-  ```
-  python ~/epigenomics_uvic/bin/get.distance.py --input results/gene.starts.tsv --start 980000
-  ```
-  **Output:**
-  ```
- ENSG00000187642.9  982093  2093
-  ```
-
-## **Task 6: Compute Distances for All Regulatory Elements**
-- Ran script for all elements in `regulatory.elements.starts.tsv`.
-- Generated `regulatoryElements.genes.distances.tsv`:
-  ```
-  ENSG00000187634.10  924879  107546
-  ENSG00000187583.10  966496  415
-  ENSG00000188290.10  1000172 0
-  ```
-
-## **Task 7: Compute Mean and Median Distances Using R**
-- Computed summary statistics in R:
-  ```R
-  data <- read.table("regulatoryElements.genes.distances.tsv", header = FALSE, sep = "\t")
-  colnames(data) <- c("Gene", "GeneStart", "Distance")
-  mean_distance <- mean(data$Distance)
-  median_distance <- median(data$Distance)
-  cat("Mean distance:", mean_distance, "\n")
-  cat("Median distance:", median_distance, "\n")
-  ```
-
-### **Final Results:**
-  ```
-  Mean distance: 26975.05
-  Median distance: 2781
-  ```
-
----
-
-## **Pipeline Execution**
-### **1. Create Directories**
 ```bash
 mkdir -p ~/epigenomics_uvic/regulatory_elements/{analyses,data/{bigBed_files,bed_files},results}
 cd ~/epigenomics_uvic/regulatory_elements || exit 1
 ```
 
-### **2. Download Metadata and Filter Peaks**
+## **Task 2: Identify Distal Regulatory Regions**
+
+The relevant data can be extracted using the metadata.tsv file downloaded from the ENCODE project, which contains metadata for histone ChIP-seq data.
+
 ```bash
-wget -O metadata.tsv "https://www.encodeproject.org/metadata/?type=Experiment&assay_title=Histone+ChIP-seq&biosample_ontology.term_name=sigmoid+colon&biosample_>grep -E "H3K27ac|H3K4me1" metadata.tsv | grep "bigBed narrowPeak" | grep "GRCh38" |
+wget -O metadata.tsv "https://www.encodeproject.org/metadata/?type=Experiment&assay_title=Histone+ChIP-seq&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&status=released&files.file_type=bigBed+narrowPeak"
+```
+To identify distal regulatory regions, the focus is on open regions that overlap with peaks of H3K27ac and H3K4me1 marks in the corresponding tissue. These histone marks are typically found at regulatory regions, such as enhancers. By filtering the open regions using these marks, a list of candidate distal regulatory elements will be obtained. After filtering the file based on the presence of both H3K27ac and H3K4me1 marks, a list of candidate regions will be generated.
+
+```bash
+grep "bigBed narrowPeak" metadata.tsv | grep "GRCh38" |
 awk 'BEGIN{FS=OFS="\t"}{print $1,$11,$23}' | sort -k2,2 -k3,3 -u > analyses/bigBed_peaks_ids_H3K27ac_H3K4me1.txt
+ls -lh metadata.tsv
+head -n 10 metadata.tsv
 ```
 
-### **3. Download and Convert bigBed Files**
+### **Download and Convert bigBed Files**
+
+The corresponding bigBed files for these regions will be downloaded, which contain the regulatory peaks:
+
 ```bash
 mkdir -p data/bigBed_files
-download_ids=$(cut -f1 analyses/bigBed_peaks_ids_H3K27ac_H3K4me1.txt)
-for file in $download_ids; do
+cut -f1 analyses/bigBed_peaks_ids_H3K27ac_H3K4me1.txt | while read file; do
     wget -P data/bigBed_files "https://www.encodeproject.org/files/$file/@@download/$file.bigBed"
-    bigBedToBed data/bigBed_files/"$file".bigBed data/bed_files/"$file".bed
 done
 ```
-### **4. Subtract Gene Coordinates and Identify Regulatory Elements**
+```bash
+mkdir -p data/bed_files
+for file in data/bigBed_files/*.bigBed; do
+    bigBedToBed "$file" data/bed_files/"$(basename "$file" .bigBed).bed"
+done
+```
+```bash
+mkdir -p results
+ls -lh data/bigBed_files/ | head -n 10
+ls -lh data/bed_files/ | head -n 10
+```
+
+### **Subtract Gene Coordinates and Identify Regulatory Elements**
 ```bash
 for tissue in stomach sigmoid_colon; do
     bedtools subtract -a ~/ATAC-seq/analyses/peaks.analysis/peaks."$tissue".bed \
                       -b ~/ATAC-seq/annotation/gene_body_coordinates_filtered.bed \
                       > ~/ATAC-seq/analyses/peaks.analysis/peaks."$tissue".non_gene.bed
-
 done
-
+```
+```bash
 for tissue in stomach sigmoid_colon; do
     bedtools intersect -a ~/ATAC-seq/analyses/peaks.analysis/peaks."$tissue".non_gene.bed \
-                       -b data/bed_files/ENCFF848EII.bed data/bed_files/ENCFF612PJZ.bed -u |
+                       -b data/bed_files/ENCFF612PJZ.bed -u |
     bedtools intersect -a - -b data/bed_files/ENCFF465AFR.bed -u > results/"$tissue"_distal_regulatory_elements.bed
-
 done
 ```
 
-### **5. Extract Chromosome 1 Regulatory Elements**
+## **Task 3: Extract Chromosome 1 Regulatory Elements**
+
+In this task, the focus is on regulatory elements located on chromosome 1. To extract the relevant regions, the previously identified regulatory elements (regulatory.elements.starts.tsv) will be filtered based on their chromosome location (chromosome 1). The regulatory region name and its start (5') coordinate will be extracted using awk, and the results will be stored in regulatory.elements.starts.tsv.
+
 ```bash
 awk '$1 == "chr1" {print $4, $2}' results/stomach_distal_regulatory_elements.bed > results/stomach_regulatory.elements.starts.tsv
 awk '$1 == "chr1" {print $4, $2}' results/sigmoid_colon_distal_regulatory_elements.bed > results/sigmoid_colon_regulatory.elements.starts.tsv
 cat results/stomach_regulatory.elements.starts.tsv results/sigmoid_colon_regulatory.elements.starts.tsv > regulatory.elements.starts.tsv
+head regulatory.elements.starts.tsv
 ```
+This will generate a file containing the regulatory regions on chromosome 1 and their corresponding start coordinates.
 
-### **6. Extract Gene Start Positions on Chromosome 1**
-```bash
-awk 'BEGIN{FS=OFS="\t"} $1 == "chr1" {if ($6=="+"){start=$2} else {start=$3}; print $4, start}' ~/ATAC-seq/annotation/gene_body_coordinates_filtered.bed > resul>```
+## **Task 4: Focus on Protein-Coding Genes on Chromosome 1**
 
-### **7. Compute Distances with Python**
+The next step is to identify protein-coding genes located on chromosome 1. From the gene body coordinates file, gene name and the start coordinate will be parsed. The strand orientation will be accounted for (if the gene is on the minus strand, the start is at the 3' end).
+
+awk 'BEGIN{FS=OFS="\t"} $1 == "chr1" {if ($6=="+"){start=$2} else {start=$3}; print $4, start}' ~/ATAC-seq/annotation/gene_body_coordinates_filtered.bed > results/gene.starts.tsv
+ls results/gene.starts.tsv
+head results/gene.starts.tsv
+```
+This will generate a file gene.starts.tsv containing the names and start coordinates of the protein-coding genes located on chromosome 1.
+
+## **Task 5: Distance Calculation Script**
+A Python script (get.distance.py) will be used to calculate the distance between a regulatory element and the closest gene. This script takes two inputs: --input, which corresponds to the gene.starts.tsv file, and --start, which is the 5' coordinate of a regulatory element.
+
 ```bash
 mkdir -p ~/epigenomics_uvic/bin
 nano ~/epigenomics_uvic/bin/get.distance.py
@@ -185,26 +144,50 @@ print("\t".join([selectedGene, str(selectedGeneStart), str(x)]))
 
 ```bash
 chmod +x ~/epigenomics_uvic/bin/get.distance.py
+```
+```bash
 python ~/epigenomics_uvic/bin/get.distance.py --input results/gene.starts.tsv --start 980000
+```
+Running this command should return the closest gene along with its distance, as shown below:
+_ENSG00000187642.9       982093  2093_
+
+## **Task 6: Calculate Distances for All Regulatory Elements**
+For each regulatory element in the regulatory.elements.starts.tsv file, the closest gene and the distance will be calculated using the script created in Task 5. This will be done by piping the regulatory.elements.starts.tsv file into the script for each region.
+
+```bash
 cat regulatory.elements.starts.tsv | while read element start; do
-python ~>     python ~/epigenomics_uvic/bin/get.distance.py --input results/gene.starts.tsv --start "$start"
-> done > regulatoryElements.genes.distances.tsv
+    python ~/epigenomics_uvic/bin/get.distance.py --input results/gene.starts.tsv --start "$start"
+done > regulatoryElements.genes.distances.tsv
+sort -u regulatoryElements.genes.distances.tsv > regulatoryElements.genes.distances.unique.tsv
+```
+```bash
 head regulatoryElements.genes.distances.tsv
 ```
+This will generate a file regulatoryElements.genes.distances.tsv containing the gene name, gene start, and distance for each regulatory element.
 
-### **8. Compute Statistics in R**
+## **Task 7: Compute Mean and Median of Distances in R**
+Finally, the mean and median of the distances from regulatoryElements.genes.distances.tsv will be computed in R. This will be done by reading the file into R and using the mean() and median() functions to calculate these statistics.
 ```R
+# Read the file
+data <- read.table("regulatoryElements.genes.distances.tsv", header = FALSE, sep = "\t")
+
+# Rename columns
+colnames(data) <- c("Gene", "GeneStart", "Distance")
+
+# Compute statistics
 mean_distance <- mean(data$Distance)
 median_distance <- median(data$Distance)
+
+# Print results
 cat("Mean distance:", mean_distance, "\n")
 cat("Median distance:", median_distance, "\n")
 ```
-
+The resulting output shows the calculated mean and median distances:
+* Mean distance: 22935.87
+* Median distance: 867
 ---
-
 ## **Conclusion**
-This pipeline successfully identifies and analyzes distal regulatory elements, linking them to the closest genes and computing their distances. The results prov>
-
+The results of this analysis provide valuable information on the relationship between distal regulatory elements and protein-coding genes, which is crucial for understanding gene regulation mechanisms in different tissues.
 
 
 
